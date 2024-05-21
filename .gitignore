@@ -1,0 +1,7 @@
+package-lock.json
+.env
+node_modules/
+/settings.json
+/userCache.json
+/history.json
+/linkedAccounts.json

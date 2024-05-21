@@ -1,0 +1,36 @@
+{
+  "name": "multichat-obs",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Matojeje/Multichat-OBS.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Matojeje/Multichat-OBS/issues"
+  },
+  "homepage": "https://github.com/Matojeje/Multichat-OBS#readme",
+  "dependencies": {
+    "@picocss/pico": "^2.0.6",
+    "cli-color": "^2.0.4",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "file-system-db": "^2.1.0",
+    "get-port": "^7.1.0",
+    "gracy": "^4.1.0",
+    "lodash": "^4.17.21",
+    "pmi.js": "^1.0.4",
+    "serve-index": "^1.9.1",
+    "socket.io": "^4.7.5",
+    "sortablejs": "^1.15.2",
+    "tubechat": "^1.0.3",
+    "twitch-webchat": "^5.1.0"
+  }
+}

@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light dark" />
+  
+  <title>Settings</title>
+  
+  <link rel="stylesheet" href="/pico/pico.min.css" />
+  <script src="/details.js"></script>
+  <script src="/chocochip.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <!-- <script src="/sort/Sortable.min.js"></script> -->
+
+  <style id="tokenStyle"></style>
+  
+  <style>
+    summary, .settingsLink {
+      font-size: 1.2rem;
+      line-height: 1rem;
+    }
+
+    details[open]>summary:not([role]):not(:focus) {
+      color: var(--pico-accordion-close-summary-color);
+    }
+
+    form {
+      margin: calc(var(--pico-typography-spacing-vertical) * 2) 0;
+    }
+
+    form fieldset { margin-bottom: 0; }
+
+    form span {
+      opacity: 70%;
+      margin-bottom: var(--pico-spacing);
+      padding:
+        var(--pico-form-element-spacing-vertical)
+        var(--pico-form-element-spacing-horizontal);
+    }
+    
+    /* Silly little details */
+
+    .floatNotice {
+      position: fixed;
+      display: grid;
+      place-items: center;
+      z-index: 9;
+      opacity: 90%;
+      left: 50%;
+      transform: translate(calc(-50% - 0.5em), 1em);
+    }
+
+    .settingsLink [data-tooltip]::before, .settingsLink[data-tooltip]::before {
+      white-space: normal;
+      width: 25ch;
+      text-wrap: balance;
+      text-align: center;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      [data-tooltip] {
+        --pico-tooltip-background-color: var(--pico-secondary-background);
+        --pico-tooltip-color: var(--pico-secondary-inverse);
+      }
+    }
+
+    /* Channel settings */
+
+    #channels .channel {
+      display: flex;
+      align-items: flex-start;
+      gap: var(--pico-grid-column-gap);
+    }
+
+    #channels .channel :not(img) {
+      flex: 1; 
+    }
+
+    #channels .channel input[type=password] {
+      max-width: 10em;
+    }
+
+    #channels .channel img {
+      transform: scale(0.66);
+      height: calc(1rem* var(--pico-line-height) + var(--pico-form-element-spacing-vertical)* 2 + var(--pico-border-width)* 2);
+    }
+
+    /* Chat settings */
+
+    .twocol {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+    }
+
+    .twocol label { padding: var(--pico-form-element-spacing-vertical) 0; }
+
+    .ghost { opacity: 70%; }
+
+  </style>
+
+  <script>
+    const socket = io({ transports: ["websocket"] })
+    // If your browser can't handle websockets, it's old enough to be in middle school
+    let settingsCache
+    let prevConnectionState = true
+    let unsavedSettings = false
+
+    document.addEventListener("DOMContentLoaded", () => {
+      socket.emit("getThemes")
+      socket.emit("getSettings")
+      document.querySelectorAll("form").forEach(form => {
+        console.log("bwah", form.id)
+        form.addEventListener("input", () => unsavedSettings = true)
+      })
+      window.onbeforeunload = function() {
+        return unsavedSettings ? "Don't forget to save your new settings!" : null;
+      }
+    })
+
+    socket.on("settings", settings => load(settings))
+
+    function load(settings) {
+      settingsCache = settings
+      const pl = settings.platforms
+      const dummy = "*".repeat(16)
+
+      // Channels
+      $id("youtube").value = pl.youtube.channel
+      $id("twitch" ).value = pl.twitch.channel
+      $id("picarto").value = pl.picarto.channel
+      $id("token-p").value = pl.picarto.tokenAdded ? dummy : ""
+      $id("token-d").value = pl.discord.tokenAdded ? dummy : ""
+
+      $id("tokenStyle").innerHTML = ["discord", "picarto"]
+      .map(x => `\n.${x}.${pl[x].tokenAdded ? "notLoaded" : "loaded"} {display:none}`).join("")
+
+      // Chat
+      $id("history").value = settings.chat.historySize
+      $id("theme").value = settings.chat.theme
+    }
+
+    function save() {
+      const settings = {
+        platforms: {
+          youtube: { channel: $id("youtube").value },
+          twitch:  { channel: $id("twitch" ).value },
+          picarto: { channel: $id("picarto").value },
+          discord: { channel: $id("discord").value },
+        },
+        chat: {
+          historySize: $id("history").value,
+          theme: $id("theme").value,
+        }
+      }
+      socket.emit("saveSettings", settings)
+      unsavedSettings = false
+    }
+
+    socket.on("themeList", themes => {
+      const elem = $id("theme")
+
+      if (themes.length == 0) {
+        elem.innerHTML = `<option value="." disabled selected>No themes found</option>`
+        setTimeout(() => {
+          elem.value = "."
+          elem.disabled = true
+        }, 50)
+      }
+      
+      else {
+        elem.innerHTML = themes.map(t => 
+          `<option value=${encodeURIComponent(t)}>${t}</option>`
+        ).join("\n")
+        setTimeout(() => {
+          if (settingsCache) elem.value = settingsCache.chat.theme
+          elem.disabled = false
+        }, 50)
+      }
+
+      setTimeout(() => elem.focus(), 150)
+    })
+
+    /* function toggleDarkMode() {
+      const darkMode = document.getElementById("darkModeSwitch").checked
+      socket.emit("darkModeChange", darkMode)
+    }
+
+    socket.on("darkModeChanged", (darkMode) => {
+      const rootStyle = document.documentElement.style
+      rootStyle.colorScheme = darkMode ? "dark" : "light"
+    }) */
+  </script>
+</head>
+<body>
+
+  <article id="disconnected" class="floatNotice" hidden>
+    <!-- <progress></progress> -->
+    <span aria-busy="true">Disconnected from the server</span>
+  </article>
+
+  <header class="container">
+    <br>
+    <div role="group">
+      <button disabled>Connect chats</button>
+      <button disabled>Disconnect chats</button>
+    </div>
+  </header>
+
+  <main class="container">
+
+    <h2>Settings</h2>
+    <br>
+
+    <details id="group-channels">
+      <summary>Channel sources</summary>
+      <form id="channels">
+
+        <!-- YouTube settings -->
+        <fieldset class="channel">
+          <img src="/youtube.svg" alt="YouTube">
+          <input type="text" id="youtube" placeholder="YouTube handle">
+        </fieldset>
+
+        <!-- Twitch settings -->
+        <fieldset class="channel">
+          <img src="/twitch.svg" alt="Twitch">
+          <input type="text" id="twitch" placeholder="Twitch username">
+        </fieldset>
+
+        <!-- Picarto settings -->
+        <fieldset class="channel">
+          <img src="/picarto.svg" alt="Picarto">
+          <input class="picarto loaded" type="text" id="picarto" placeholder="Picarto username" aria-label="Picarto username">
+          <input class="picarto loaded" type="password" disabled hidden autocomplete="off" id="token-p" placeholder="No token loaded" aria-label="Picarto bot token" aria-describedby="token-desc" />
+          <span class="picarto notLoaded">No token loaded for Picarto</span>
+        </fieldset>
+
+        <!-- Discord settings -->
+        <fieldset class="channel">
+          <img src="/discord.svg" alt="Discord">
+          <select id="discord" class="discord loaded">
+            <option selected disabled value="">Text channel</option>
+          </select>
+          <input id="token-d" type="password" disabled hidden class="discord loaded" autocomplete="off" placeholder="No token loaded" aria-label="Discord bot token" aria-describedby="token-desc" />
+          <span class="discord notLoaded">No token loaded for Discord</span>
+        </fieldset>
+
+        <p><small id="token-desc">
+          Please put your Picarto and Discord bot tokens inside the .env&nbsp;file.
+        </small></p>
+
+      </form>
+    </details>
+    
+    <hr>
+
+    <details id="group-chat">
+      <summary>Chat display</summary>
+      <form id="chat">
+
+        <fieldset class="twocol">
+          <label for="theme">Theme</label>
+          <select id="theme" name="theme" onchange="socket.emit('themeChange', decodeURIComponent(this.value))"></select>
+        </fieldset>
+
+        <fieldset class="twocol">
+          <label for="history">Message history size</label>
+          <input type="number" name="history" id="history" />
+        </fieldset>
+
+        <filedset role="group" class="twocol">
+          <input type="button" class="outline" disabled value="Clear message history" />
+          <input type="button" class="outline" value="Refresh theme list" onclick="socket.emit('getThemes')"/>
+        </filedset>
+      </form>
+    </details>
+    
+    <hr>
+
+    <p class="settingsLink">
+      <a href="/" data-tooltip="Link chatters' accounts from multiple platforms to look the same">Linked accounts</a>
+      <small>(separate page)</small>
+    </p>
+    
+    <!-- <label for="darkModeSwitch">Dark Mode:</label><input type="checkbox" id="darkModeSwitch" onchange="toggleDarkMode()" /> -->
+  </main>
+
+  <footer class="container">
+    <input type="button" value="Save settings" onclick="save()" />
+  </footer>
+
+  <script>
+    rememberIfDetailsWasDisclosed("group-channels")
+    rememberIfDetailsWasDisclosed("group-chat")
+    setInterval(() => {
+      const connected = socket.connected
+      $id("disconnected").hidden = connected
+      if (connected == true && prevConnectionState == false) location.reload()
+      prevConnectionState = connected
+    }, 2000);
+  </script>
+
+</body>
+</html>

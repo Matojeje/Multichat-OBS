@@ -1,0 +1,7 @@
+* text=auto
+* text eol=lf
+*.json text
+
+.gitattributes export-ignore
+.gitignore     export-ignore
+.gitkeep       export-ignore
