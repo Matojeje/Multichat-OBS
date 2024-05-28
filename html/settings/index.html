@@ -13,7 +13,11 @@
   <script src="/socket.io/socket.io.js"></script>
   <!-- <script src="/sort/Sortable.min.js"></script> -->
 
-  <style id="tokenStyle"></style>
+  <style id="tokenStyle">
+    /* This style will be modified right away */
+    .discord.loaded, .discord.notLoaded {display:none}
+    .picarto.loaded, .picarto.notLoaded {display:none}
+  </style>
   
   <style>
     summary, .settingsLink {
@@ -51,11 +55,12 @@
       transform: translate(calc(-50% - 0.5em), 1em);
     }
 
-    .settingsLink [data-tooltip]::before, .settingsLink[data-tooltip]::before {
+    [data-tooltip]::before {
       white-space: normal;
       width: 25ch;
       text-wrap: balance;
       text-align: center;
+      transform: translate(-25%, -.25rem);
     }
 
     @media (prefers-color-scheme: dark) {
@@ -73,7 +78,7 @@
       gap: var(--pico-grid-column-gap);
     }
 
-    #channels .channel :not(img) {
+    #channels .channel :not(img, button) {
       flex: 1; 
     }
 
@@ -86,36 +91,98 @@
       height: calc(1rem* var(--pico-line-height) + var(--pico-form-element-spacing-vertical)* 2 + var(--pico-border-width)* 2);
     }
 
-    /* Chat settings */
+    .channel input[readonly], .channel input:read-only {
+      cursor: not-allowed;
+    }
+
+    /* Chat and other settings */
 
     .twocol {
       display: grid;
       grid-template-columns: 1fr 1fr;
     }
 
-    .twocol label { padding: var(--pico-form-element-spacing-vertical) 0; }
+    .twocol label, label:has(input[type=checkbox]) {
+      padding: var(--pico-form-element-spacing-vertical) 0;
+    }
 
     .ghost { opacity: 70%; }
+
+    /* Page layout for sticky footer */
+
+    body {
+      display: flex;
+      flex-direction: column;
+      min-height: 100dvh;
+    }
+    
+    main { flex: 1 }
 
   </style>
 
   <script>
     const socket = io({ transports: ["websocket"] })
     // If your browser can't handle websockets, it's old enough to be in middle school
+
     let settingsCache
-    let prevConnectionState = true
+    let prevWebsocketAlive = true
     let unsavedSettings = false
 
+    // State management
+
+    /**
+     * @typedef {"youtube"|"twitch"|"picarto"|"discord"} Platform
+     * @enum {number} ConnState
+     */
+    const ConnState = {
+      "disconnected":   0,
+      "connecting":     1,
+      "connected":      2,
+      "disconnecting":  3,
+    }
+
+    /** @typedef {object} ConnStates
+     * @property {number} youtube
+     * @property {number} twitch
+     * @property {number} picarto
+     * @property {number} discord
+     */
+    let connectState = {
+      youtube: ConnState.disconnected,
+      twitch:  ConnState.disconnected,
+      picarto: ConnState.disconnected,
+      discord: ConnState.disconnected
+    }
+
     document.addEventListener("DOMContentLoaded", () => {
+      // Load settings
       socket.emit("getThemes")
       socket.emit("getSettings")
+      onConnectionChange(connectState)
+
+      // Set up unsaved check
       document.querySelectorAll("form").forEach(form => {
-        console.log("bwah", form.id)
-        form.addEventListener("input", () => unsavedSettings = true)
+        form.addEventListener("input", () => {
+          unsavedSettings = true
+          $id("save").value = "Save settings"
+          $id("save").disabled = false
+        })
       })
+
       window.onbeforeunload = function() {
         return unsavedSettings ? "Don't forget to save your new settings!" : null;
       }
+
+      // Remember collapsed/expanded states
+      document.querySelectorAll(`[id^="group-"]`).forEach(group => rememberIfDetailsWasDisclosed(group.id))
+
+      // Monitor connection
+      setInterval(() => {
+      const websocketAlive = socket.connected
+      $id("disconnected").hidden = websocketAlive
+      if (websocketAlive == true && prevWebsocketAlive == false) location.reload()
+      prevWebsocketAlive = websocketAlive
+    }, 2000);
     })
 
     socket.on("settings", settings => load(settings))
@@ -138,6 +205,10 @@
       // Chat
       $id("history").value = settings.chat.historySize
       $id("theme").value = settings.chat.theme
+      
+      // Server
+      $id("port").value = settings.server.port
+      $id("autoconnect").checked = settings.server.autoconnect
     }
 
     function save() {
@@ -151,11 +222,22 @@
         chat: {
           historySize: $id("history").value,
           theme: $id("theme").value,
+        },
+        server: {
+          port: $id("port").value,
+          autoconnect: $id("autoconnect").checked,
         }
       }
       socket.emit("saveSettings", settings)
       unsavedSettings = false
+
+      $id("save").value = "Saving..."
     }
+
+    socket.on("saveSuccessful", () => {
+      $id("save").value = "Saved!"
+      $id("save").disabled = true
+    })
 
     socket.on("themeList", themes => {
       const elem = $id("theme")
@@ -181,6 +263,99 @@
       setTimeout(() => elem.focus(), 150)
     })
 
+    socket.on("connectChange", onConnectionChange)
+
+    function onConnectionChange(newState) {
+      connectState = newState
+      Object.keys(connectState).forEach(platform => {
+        const button = $(`.connectButton[data-platform=${platform}]`)
+        const state = connectState[platform]
+        const input = $id(platform)
+
+        switch (state) {
+
+          case ConnState.connecting:
+            button.classList.remove("outline")
+            button.innerText = "Connecting"
+            button.disabled = true
+            button.ariaBusy = true
+            input.readOnly = true
+
+            button.onclick = () => {console.log("Click while connecting")}
+            break
+
+          case ConnState.disconnecting:
+            button.classList.add("outline")
+            button.innerText = "Disconnecting"
+            button.disabled = true
+            button.ariaBusy = true
+            input.readOnly = true
+
+            button.onclick = () => {console.log("Click while disconnecting")}
+            break
+
+          case ConnState.disconnected:
+            button.classList.remove("outline")
+            button.innerText = "Connect"
+            button.disabled = false
+            button.ariaBusy = null
+            input.readOnly = false
+
+            button.onclick = function() {
+              console.log("Click while disconnected")
+              const channel = input.value
+              if (channel.trim() == "") {
+                input.focus()
+                input.ariaInvalid = true
+                setTimeout(() => input.ariaInvalid = null, 1500)
+              } else {
+                socket.emit("pleaseConnect", { platform, channel })
+              }
+            }
+            break
+
+          case ConnState.connected:
+            button.classList.add("outline")
+            button.innerText = "Disconnect"
+            button.disabled = false
+            button.ariaBusy = null
+            input.readOnly = true
+
+            button.onclick = () => {
+              console.log("Click while connected")
+              const channel = input.value
+              socket.emit("pleaseDisconnect", { platform, channel })
+            }
+            break
+
+
+          default:
+            const msg = `Unknwon connection state #${state} for platform ${platform}`
+            console.error(msg)
+            alert(msg)
+            break;
+        }
+
+        /* button.classList[connected ? "add" : "remove"]("outline")
+        button.innerText = connected ? "Disconnect" : "Connect"
+        button.onclick = function() {
+          const input = $id(platform)
+          const channel = input.value
+          if (channel.trim() == "") {
+            input.focus()
+            input.ariaInvalid = true
+            setTimeout(() => input.ariaInvalid = null, 1500)
+          } else {
+            socket.emit(`please${connected ? "Disconnect" : "Connect"}`, {platform, channel})
+          }
+        } */
+      })
+    }
+
+    socket.on("alert", ({ message, destination }) => {
+      if (destination != "chat") alert(message)
+    })
+
     /* function toggleDarkMode() {
       const darkMode = document.getElementById("darkModeSwitch").checked
       socket.emit("darkModeChange", darkMode)
@@ -199,13 +374,13 @@
     <span aria-busy="true">Disconnected from the server</span>
   </article>
 
-  <header class="container">
+  <!-- <header class="container">
     <br>
     <div role="group">
       <button disabled>Connect chats</button>
       <button disabled>Disconnect chats</button>
     </div>
-  </header>
+  </header> -->
 
   <main class="container">
 
@@ -220,12 +395,14 @@
         <fieldset class="channel">
           <img src="/youtube.svg" alt="YouTube">
           <input type="text" id="youtube" placeholder="YouTube handle">
+          <button type="button" class="connectButton" data-platform="youtube">Connect</button>
         </fieldset>
 
         <!-- Twitch settings -->
         <fieldset class="channel">
           <img src="/twitch.svg" alt="Twitch">
           <input type="text" id="twitch" placeholder="Twitch username">
+          <button type="button" class="connectButton" data-platform="twitch">Connect</button>
         </fieldset>
 
         <!-- Picarto settings -->
@@ -233,6 +410,7 @@
           <img src="/picarto.svg" alt="Picarto">
           <input class="picarto loaded" type="text" id="picarto" placeholder="Picarto username" aria-label="Picarto username">
           <input class="picarto loaded" type="password" disabled hidden autocomplete="off" id="token-p" placeholder="No token loaded" aria-label="Picarto bot token" aria-describedby="token-desc" />
+          <button type="button" class="picarto loaded connectButton" data-platform="picarto">Connect</button>
           <span class="picarto notLoaded">No token loaded for Picarto</span>
         </fieldset>
 
@@ -243,11 +421,12 @@
             <option selected disabled value="">Text channel</option>
           </select>
           <input id="token-d" type="password" disabled hidden class="discord loaded" autocomplete="off" placeholder="No token loaded" aria-label="Discord bot token" aria-describedby="token-desc" />
+          <button type="button" class="discord loaded connectButton" data-platform="discord">Connect</button>
           <span class="discord notLoaded">No token loaded for Discord</span>
         </fieldset>
 
         <p><small id="token-desc">
-          Please put your Picarto and Discord bot tokens inside the .env&nbsp;file.
+          Please put your Picarto and Discord bot tokens inside the <code>.env</code>&nbsp;file.
         </small></p>
 
       </form>
@@ -259,8 +438,25 @@
       <summary>Chat display</summary>
       <form id="chat">
 
+        <!-- <fieldset class="grid" style="--pico-grid-row-gap: 0px"> -->
+          <label for="timestamps">
+            <input type="checkbox" id="timestamps" name="timestamps" />
+            Show timestamps
+          </label>
+  
+          <!-- <label for="soundOn">
+            <input type="checkbox" id="soundOn" name="soundOn" />
+            Play sound notifications
+          </label>
+        </fieldset>
+
+        <label for="soundVolume">
+          Sound volume
+          <input type="range" id="soundVolume" name="soundVolume" />
+        </label> -->
+
         <fieldset class="twocol">
-          <label for="theme">Theme</label>
+          <label for="theme"><rt data-tooltip="Changes reflect instantly without having to save." data-placement="right">Theme</rt></label>
           <select id="theme" name="theme" onchange="socket.emit('themeChange', decodeURIComponent(this.value))"></select>
         </fieldset>
 
@@ -270,36 +466,44 @@
         </fieldset>
 
         <filedset role="group" class="twocol">
-          <input type="button" class="outline" disabled value="Clear message history" />
+          <input type="button" class="outline" value="Clear message history" />
           <input type="button" class="outline" value="Refresh theme list" onclick="socket.emit('getThemes')"/>
         </filedset>
       </form>
     </details>
-    
+
     <hr>
+
+    <details id="group-server">
+      <summary>Server behavior</summary>
+      <form id="server">
+
+        <fieldset class="twocol">
+          <label for="port"><rt data-tooltip="If the port is taken, the next available port will be used." data-placement="right">Website port</rt> <small>(requires restart)</small></label>
+          <input type="number" name="port" id="port" min="1" max="65535" step="1" />
+        </fieldset>
+
+        <label for="autoconnect">
+          <input type="checkbox" id="autoconnect" name="autoconnect" />
+          Auto-connect to your channels on launch
+        </label>
+
+      </form>
+    </details>
+    
+    <!-- <hr>
 
     <p class="settingsLink">
       <a href="/" data-tooltip="Link chatters' accounts from multiple platforms to look the same">Linked accounts</a>
       <small>(separate page)</small>
-    </p>
+    </p> -->
     
     <!-- <label for="darkModeSwitch">Dark Mode:</label><input type="checkbox" id="darkModeSwitch" onchange="toggleDarkMode()" /> -->
   </main>
 
   <footer class="container">
-    <input type="button" value="Save settings" onclick="save()" />
+    <input type="button" value="Save settings" onclick="save()" id="save" disabled />
   </footer>
-
-  <script>
-    rememberIfDetailsWasDisclosed("group-channels")
-    rememberIfDetailsWasDisclosed("group-chat")
-    setInterval(() => {
-      const connected = socket.connected
-      $id("disconnected").hidden = connected
-      if (connected == true && prevConnectionState == false) location.reload()
-      prevConnectionState = connected
-    }, 2000);
-  </script>
 
 </body>
 </html>

@@ -2,6 +2,7 @@ require("dotenv").config()
 
 const
 _ = require("lodash"),
+xss = require("xss"),
 http = require("http"),
 { join, basename } = require("path"),
 { Server } = require("socket.io"),
@@ -30,7 +31,10 @@ const defaults = {
     picarto: {channel: "", tokenAdded: !!process.env.picarto},
     discord: {channel: "", tokenAdded: !!process.env.discord},
   },
-  port: 1151
+  server: {
+    port: 1151,
+    autoconnect: false,
+  },
 }
 
 const settings = new FSDB("./settings.json", false)
@@ -38,10 +42,36 @@ const settings = new FSDB("./settings.json", false)
 settings.set("version", settingsVersion)
 
 const history = new FSDB("./history.json", true)
+history.set("version", settingsVersion)
+if (!history.has("msg")) history.set("msg", [])
+
 const userCache = new FSDB("./userCache.json", true)
 
-/* let darkMode = false // Default to light mode */
+// State management
 
+/**
+ * @typedef {"youtube"|"twitch"|"picarto"|"discord"} Platform
+ * @enum {number} ConnState
+ */
+const ConnStates = {
+  "disconnected":   0,
+  "connecting":     1,
+  "connected":      2,
+  "disconnecting":  3,
+}
+
+/** @typedef {object}
+ * @property {number} youtube
+ * @property {number} twitch
+ * @property {number} picarto
+ * @property {number} discord
+ */
+let connectState = {
+  youtube: ConnStates.disconnected,
+  twitch:  ConnStates.disconnected,
+  picarto: ConnStates.disconnected,
+  discord: ConnStates.disconnected
+}
 
 /* ======== Websockets (talking to the browser) ======== */
 
@@ -50,6 +80,8 @@ websock.on("connection", (socket) => {
   socket.on("disconnect", () => {
     debug(`A web client disconnected  (${--clients} clients active)`)
   })
+
+  websock.emit("connectChange", connectState) // Hacky!
 
   socket.on("getSettings", () => {
     const currentSettings = _.defaultsDeep(dbAsObject(settings), defaults)
@@ -61,7 +93,9 @@ websock.on("connection", (socket) => {
     try {
       settings.set("version", settingsVersion)
       if (newSett?.platforms) settings.set("platforms", newSett.platforms)
+      if (newSett?.server) settings.set("server", newSett.server)
       if (newSett?.chat) settings.set("chat", newSett.chat)
+      websock.emit("saveSuccessful")
     } catch (err) { error(err) }
   })
 
@@ -70,6 +104,46 @@ websock.on("connection", (socket) => {
   socket.on("themeChange", newTheme => {
     websock.emit("themeChange", newTheme)
     settings.set("chat.theme", newTheme)
+  })
+
+  socket.on("pleaseConnect", ({platform, channel}) => {
+    debug(`Trying to connect to ${platform} channel ${channel}`)
+
+    const key = `platforms.${platform}.channel`
+    const savedChannel = settings.get(key)
+    const state = connectState[platform]
+
+    if (channel != settings.get(key)) {
+      warn("Input channel different from saved, saving the new channel")
+      settings.set(key, channel)
+    }
+
+    if (state === ConnStates.connected) {
+      debug("Already connected, disconnecting from " + savedChannel)
+      switch (platform) {
+        case "youtube":
+          youtube.disconnect(savedChannel)
+          break
+      
+        default:
+          warn("Unknown platform " + platform)
+          break
+      }
+    }
+
+    connectState[platform] = ConnStates.connecting
+    websock.emit("connectChange", connectState)
+    
+    connectChat(platform, channel)
+  })
+
+  socket.on("pleaseDisconnect", async ({platform, channel}) => {
+    debug(`Trying to disconnect from ${platform} channel ${channel}`)
+    
+    connectState[platform] = ConnStates.disconnecting
+    websock.emit("connectChange", connectState)
+    
+    disconnectChat(platform, channel)
   })
 
   /* // Send current time every second
@@ -86,6 +160,13 @@ websock.on("connection", (socket) => {
   // Send initial dark mode setting
   socket.emit("darkModeChanged", darkMode) */
 })
+
+
+/** @param {"chat"|"settings"|"both"} destination */
+function sendAlert(destination, message="") {
+  websock.emit("alert", { message, destination })
+  warn(message)
+}
 
 /* ======== Web server stuff ======== */
 
@@ -105,7 +186,7 @@ routes.forEach(route => app.use(route.endpoint,
 
 startServer()
 async function startServer() {
-  const port = await getPort(settings.get("port") ?? defaults.port)
+  const port = await getPort(settings.get("server.port") ?? defaults.server.port)
   server.listen(port, () => {
     const ip = getLocalInterface()?.address ?? "127.0.0.1"
     info("Server is running on " + clc.underline(`http://${ip}:${port}`))
@@ -134,7 +215,7 @@ async function startServer() {
  * 
  * @typedef {{
  *  id: string,
- *  platform: "youtube"|"twitch"|"picarto"|"discord"
+ *  platform: Platform,
  *  timestamp: Date,
  *  contents: string,
  *  author: ChatPerson,
@@ -142,21 +223,147 @@ async function startServer() {
  */
 
 /** @param {ChatMessage} message  */
-function sendMessage(message) {
+function addMessage(message) {
+
+  // Send to chat window
   websock.emit("newMessage", message)
+
+  // Add to message history
+  history.push("msg", message)
+
+  // Trim message history
+  // TODO: Inspect possible race conditions here
+  /** @type {ChatMessage[]} */
+  const newHist = history.get("msg")
+  const maxSize = settings.get("chat.historySize") ?? defaults.chat.historySize
+  if (newHist.length > maxSize) {
+    history.set("msg", _.tail(newHist))
+  }
+
+  // User caching
+  cacheUser(message)
 }
 
 /** @param {ChatMessage} message  */
 function cacheUser(message) {
   const user = message.author
-  const id = user.id ?? (message.platform + "-" + user.nickname)
-  userCache.set(id, user)
+  const id = user.id ?? user.nickname
+  userCache.set(`${message.platform}.${id}`, user)
   return user
+}
+
+/* ======== Generic platform functions ======== */
+
+/** @param {Platform} platform @param {string} channel  */
+async function connectChat(platform, channel) {
+  switch (platform.toLowerCase()) {
+
+    case "youtube":
+      youtube.connect(channel)
+
+      const videoId = await waitFor(() => {
+        const tmp = youtube.channelList()
+        const ch = tmp.find(ch => ch.user == channel)
+
+        if (ch == undefined) return null
+        return ch?.videoId
+      }, /* Timeout: */ 20_000, /* Polling interval: */ 900)
+
+      if (videoId) {
+        connectState.youtube = ConnStates.connected
+        websock.emit("connectChange", connectState)
+        return videoId
+      }
+      
+      else {
+        sendAlert("settings", `${properCase(platform)} user ${channel} isn't livestreaming right now!`)
+        connectState[platform] = ConnStates.disconnected
+        websock.emit("connectChange", connectState)
+        return false
+      }
+
+      break
+  
+    default:
+      sendAlert("settings", `Unknown platform "${platform}"`)
+      connectState[platform] = ConnStates.disconnected
+      websock.emit("connectChange", connectState)
+      return false
+  }
+}
+
+/** @param {Platform} platform @param {string?} channel  */
+function disconnectChat(platform, channel) {
+  switch (platform.toLowerCase()) {
+    case "youtube":
+      if (channel) {
+        youtube.disconnect(channel)
+        connectState.youtube = ConnStates.disconnected
+        websock.emit("connectChange", connectState)
+      } else {
+        const currentChannels = youtube.channelList()
+        currentChannels.forEach(ch => youtube.disconnect(ch.user))
+        connectState.youtube = ConnStates.disconnected
+        websock.emit("connectChange", connectState)
+      } break
+  
+    default:
+      warn(`Unknown platform "${platform}"`)
+      break
+  }
 }
 
 /* ======== YouTube ======== */
 
+const youtube = new (require("tubechat")).TubeChat()
 
+youtube.on("chat_connected", (channel, videoId) => {
+  info(`[YouTube] Connected to ${channel}, video ${videoId}`)
+  // console.log("X", youtube.channelList())
+})
+
+youtube.on("chat_disconnected", (channel, videoId) => {
+  info(`[YouTube] Disconnected from ${channel}, video ${videoId}`)
+})
+
+youtube.on("message", (msg) => {
+
+  // console.log(msg.message.map(chunk => Object.keys(chunk)))
+  // console.log(msg.message)
+
+  const contents = msg.message.map(chunk => {
+    let serializedChunk = ""
+    // @ts-ignore
+    if (chunk.text) serializedChunk += xss(chunk.text) 
+    if (chunk.emoji) serializedChunk += `<img src="${chunk.emoji}" class="emoji">`
+    if (chunk.textEmoji) {
+      warn("YouTube sent a TextEmoji chunk! I didn't encounter this in my testing yet. \
+      Please send me so I know what it looks like and can implement support for it:")
+      debug("`"+JSON.stringify(chunk.textEmoji)+"`")
+    }
+    return serializedChunk
+  }).join("")
+
+  addMessage({
+    platform: "youtube",
+    id: msg.id,
+    contents,
+    timestamp: new Date(msg.timestamp),
+    author: {
+      nickname: msg.name,
+      avatarURL: msg.thumbnail.url,
+      id: msg.channelId,
+      color: msg.color == "#bcbcbc" ? undefined : msg.color,
+      statusFlags: {
+        moderator: msg.badges.moderator == 1,
+        owner: msg.badges.owner == 1,
+        subscribed: msg.badges.subscriber == 1,
+        verified: msg.badges.verified == 1,
+      }
+    }
+  })
+
+})
 
 /* ======== Graceful exit ======== */
 
@@ -171,6 +378,16 @@ function warn(message="") { console.warn(clc.yellow(message)) }
 function error(message="") { console.error(clc.red(message)) }
 function debug(message="") { console.debug(clc.blackBright(message)) }
 
+
+/** @param {Platform} platform  */
+function properCase(platform) {
+  return {
+    youtube: "YouTube",
+    twitch:  "Twitch",
+    picarto: "Picarto",
+    discord: "Discord",
+  }[platform]
+}
 
 async function getPort(portNumber=3000) {
   const port = await (await import("get-port")).default({port: _.range(portNumber, portNumber+99)})
@@ -199,10 +416,10 @@ function getThemes() {
     const files = require("fs").readdirSync("./themes")
 
     const styles = files.filter(filename => filename.toLowerCase().endsWith(".css"))
-      .map(filename => stripFileExt(filename))
+      .map(stripFileExt)
 
     const templates = files.filter(filename => filename.match(/\.html?$/i))
-      .map(filename => stripFileExt(filename))
+      .map(stripFileExt)
 
     return _.intersection(styles, templates)
 
@@ -210,4 +427,27 @@ function getThemes() {
 
   // Fallback to included theme
   return ["Plain"]
+}
+
+/**
+ * Waits for the test function to return a truthy value
+ * @link https://stackoverflow.com/a/58296791
+ * @param {function} test Function to check for a truthy return value
+ * @example let el = await waitFor( () => document.querySelector("#el_id")) )
+ */
+async function waitFor(test, timeout_ms=20_000, frequency=200) {
+    function sleep(ms=frequency) { return new Promise(resolve => setTimeout(resolve, ms))}
+    const endTime = Date.now() + timeout_ms
+    const isNotTruthy = (x) => x === undefined || x === false || x === null || x.length === 0
+    let result = test()
+    // console.log("A", result)
+
+    while (isNotTruthy(result)) {
+      // console.log("B", result)
+      if (Date.now() > endTime) return false
+      await sleep(frequency)
+      result = test()
+    }
+    // console.log("C", result)
+    return result
 }

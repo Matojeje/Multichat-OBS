@@ -31,6 +31,7 @@
     "socket.io": "^4.7.5",
     "sortablejs": "^1.15.2",
     "tubechat": "^1.0.3",
-    "twitch-webchat": "^5.1.0"
+    "twitch-webchat": "^5.1.0",
+    "xss": "^1.0.15"
   }
 }
