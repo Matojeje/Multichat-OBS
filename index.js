@@ -81,7 +81,7 @@ websock.on("connection", (socket) => {
     debug(`A web client disconnected  (${--clients} clients active)`)
   })
 
-  websock.emit("connectChange", connectState) // Hacky!
+  socket.emit("connectChange", connectState) // Hacky!
 
   socket.on("getSettings", () => {
     const currentSettings = _.defaultsDeep(dbAsObject(settings), defaults)
@@ -118,6 +118,7 @@ websock.on("connection", (socket) => {
       settings.set(key, channel)
     }
 
+    /*
     if (state === ConnStates.connected) {
       debug("Already connected, disconnecting from " + savedChannel)
       switch (platform) {
@@ -130,19 +131,15 @@ websock.on("connection", (socket) => {
           break
       }
     }
+    */
 
-    connectState[platform] = ConnStates.connecting
-    websock.emit("connectChange", connectState)
-    
+    changeConnectState(platform, ConnStates.connecting)
     connectChat(platform, channel)
   })
 
   socket.on("pleaseDisconnect", async ({platform, channel}) => {
     debug(`Trying to disconnect from ${platform} channel ${channel}`)
-    
-    connectState[platform] = ConnStates.disconnecting
-    websock.emit("connectChange", connectState)
-    
+    changeConnectState(platform, ConnStates.disconnecting)
     disconnectChat(platform, channel)
   })
 
@@ -270,42 +267,63 @@ async function connectChat(platform, channel) {
       }, /* Timeout: */ 20_000, /* Polling interval: */ 900)
 
       if (videoId) {
-        connectState.youtube = ConnStates.connected
-        websock.emit("connectChange", connectState)
+        changeConnectState(platform, ConnStates.connected)
         return videoId
       }
       
       else {
         sendAlert("settings", `${properCase(platform)} user ${channel} isn't livestreaming right now!`)
-        connectState[platform] = ConnStates.disconnected
-        websock.emit("connectChange", connectState)
+        changeConnectState(platform, ConnStates.disconnected)
         return false
       }
+
+    case "twitch":
+      twitch.join(channel)
+
+      .then(data => {
+        info(`[Twitch] Connected to ${data}`)
+        changeConnectState(platform, ConnStates.connected)
+        return data
+      })
+
+      .catch(err => {
+        sendAlert(err)
+        changeConnectState(platform, ConnStates.disconnected)
+        return false
+      })
 
       break
   
     default:
       sendAlert("settings", `Unknown platform "${platform}"`)
-      connectState[platform] = ConnStates.disconnected
-      websock.emit("connectChange", connectState)
+      changeConnectState(platform, ConnStates.disconnected)
       return false
   }
 }
 
 /** @param {Platform} platform @param {string?} channel  */
-function disconnectChat(platform, channel) {
+async function disconnectChat(platform, channel="") {
   switch (platform.toLowerCase()) {
+
     case "youtube":
-      if (channel) {
-        youtube.disconnect(channel)
-        connectState.youtube = ConnStates.disconnected
-        websock.emit("connectChange", connectState)
-      } else {
+      if (channel) youtube.disconnect(channel)
+      else {
         const currentChannels = youtube.channelList()
         currentChannels.forEach(ch => youtube.disconnect(ch.user))
-        connectState.youtube = ConnStates.disconnected
-        websock.emit("connectChange", connectState)
-      } break
+      }
+
+      changeConnectState(platform, ConnStates.disconnected)
+      break
+
+    case "twitch":
+      if (channel) await twitch.part(channel)
+      else {
+        const currentChannels = twitch.getChannels()
+        await Promise.all(currentChannels.map( ch => twitch.part(ch) ))
+      }
+
+      changeConnectState(platform, ConnStates.disconnected)
+      break
   
     default:
       warn(`Unknown platform "${platform}"`)
@@ -365,9 +383,47 @@ youtube.on("message", (msg) => {
 
 })
 
+/* ======== Twitch ======== */
+
+const twitch = new (require("tmi.js")).Client({
+  channels: [],
+  connection: { reconnect: true, secure: true },
+  // options: { debug: true },
+  // logger: { error, info, warn },
+})
+
+twitch.on("chat", (channel, us, message, self) => {
+  // My goodness, Twitch's userstate is messy
+  // /* if (us.username == "fossabot") */ console.debug({channel, us, message, self})
+  if (self) return
+
+  addMessage({
+    platform: "twitch",
+    id: us.id ?? crypto.randomUUID(),
+    contents: formatTwitchEmotes(message, us.emotes),
+    timestamp: new Date(Number(us?.["tmi-sent-ts"] ?? Date.now())),
+    author: {
+      nickname: us["display-name"] ?? us.username ?? "Anon",
+      // API key needed for avatar URL (blegh)
+      id: us["user-id"],
+      color: us.color,
+      statusFlags: {
+        moderator: us.mod || !!us.badges?.moderator || !!us.badges?.global_mod || !!us.badges?.admin,
+        owner: !!us.badges?.broadcaster || ("#"+_.lowerCase(us.username) == channel),
+        subscribed: us.subscriber || !!us.badges?.subscriber,
+        verified: !!us.badges?.partner,
+      }
+    }
+  })
+})
+
+twitch.connect()
+
 /* ======== Graceful exit ======== */
 
 require("gracy").onExit(async function() {
+  if (connectState.youtube) disconnectChat("youtube")
+  if (connectState.twitch) disconnectChat("twitch")
   server.close(() => debug("Closing server"))
 }, {logLevel: "error"})
 
@@ -409,6 +465,12 @@ function getLocalInterface() {
 /** @param {string} input */
 function stripFileExt(input) { return input.substring(0, input.lastIndexOf('.')) || input }
 
+/** @param {Platform} platform @param {ConnStates} newState */
+function changeConnectState(platform, newState) {
+  connectState[platform] = newState
+  websock.emit("connectChange", connectState)
+}
+
 function getThemes() {
   // I'm sure we could get fancier with Object.groupBy()
   // but it's really not needed here, it's simple stuff!
@@ -438,7 +500,7 @@ function getThemes() {
 async function waitFor(test, timeout_ms=20_000, frequency=200) {
     function sleep(ms=frequency) { return new Promise(resolve => setTimeout(resolve, ms))}
     const endTime = Date.now() + timeout_ms
-    const isNotTruthy = (x) => x === undefined || x === false || x === null || x.length === 0
+    const isNotTruthy = (/** @type {string | boolean | any[] | null | undefined} */ x) => x === undefined || x === false || x === null || x.length === 0
     let result = test()
     // console.log("A", result)
 
@@ -450,4 +512,27 @@ async function waitFor(test, timeout_ms=20_000, frequency=200) {
     }
     // console.log("C", result)
     return result
+}
+
+/** @link https://github.com/tmijs/tmi.js/issues/11#issuecomment-116459845 */
+function formatTwitchEmotes(text, emotes) {
+  let splitText = text.split("")
+  for (let i in emotes) {
+    const e = emotes[i]
+    for (let j in e) {
+      let mote = e[j]
+      if (typeof mote == "string") {
+        mote = mote.split("-").map(Number)
+        const length = mote[1] - mote[0]
+        const empty = new Array(length + 1).fill("")
+        splitText = [
+          ...splitText.slice(0, mote[0]),
+          ...empty,
+          ...splitText.slice(mote[1] + 1)
+        ]
+        splitText[mote[0]] = `<img class="emoji" src="http://static-cdn.jtvnw.net/emoticons/v1/${i}/3.0">`
+      }
+    }
+  }
+  return splitText.join("")
 }

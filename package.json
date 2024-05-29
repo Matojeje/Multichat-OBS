@@ -30,8 +30,8 @@
     "serve-index": "^1.9.1",
     "socket.io": "^4.7.5",
     "sortablejs": "^1.15.2",
+    "tmi.js": "^1.8.5",
     "tubechat": "^1.0.3",
-    "twitch-webchat": "^5.1.0",
     "xss": "^1.0.15"
   }
 }
