@@ -272,7 +272,7 @@ async function connectChat(platform, channel) {
       }
       
       else {
-        sendAlert("settings", `${properCase(platform)} user ${channel} isn't livestreaming right now!`)
+        sendAlert("settings", `${properCase(platform)} user ${channel} isn't livestreaming right now!\nIs the stream publicly visible on this channel?`)
         changeConnectState(platform, ConnStates.disconnected)
         return false
       }
@@ -292,6 +292,19 @@ async function connectChat(platform, channel) {
         return false
       })
 
+      break
+
+    case "picarto":
+      picarto = new pmi.client({
+        identity: {
+          username: channel,
+          password: process.env.PICARTO
+        }
+      })
+
+      picartoSetup(picarto)
+      picarto.connect()
+      // Connection state changes handled in picartoSetup()
       break
   
     default:
@@ -322,6 +335,11 @@ async function disconnectChat(platform, channel="") {
         await Promise.all(currentChannels.map( ch => twitch.part(ch) ))
       }
 
+      changeConnectState(platform, ConnStates.disconnected)
+      break
+    
+    case "picarto":
+      if (picarto) picarto.close()
       changeConnectState(platform, ConnStates.disconnected)
       break
   
@@ -394,7 +412,7 @@ const twitch = new (require("tmi.js")).Client({
 
 twitch.on("chat", (channel, us, message, self) => {
   // My goodness, Twitch's userstate is messy
-  // /* if (us.username == "fossabot") */ console.debug({channel, us, message, self})
+  /* if (us.username == "fossabot") */ console.debug({channel, us, message, self})
   if (self) return
 
   addMessage({
@@ -415,15 +433,71 @@ twitch.on("chat", (channel, us, message, self) => {
       }
     }
   })
+
 })
 
 twitch.connect()
+
+/* ======== Picarto ======== */
+
+const pmi = require("pmi.js")
+let picarto
+
+/** @param {import("pmi.js/lib/client")} client */
+function picartoSetup(client) {
+
+  // @ts-ignore
+  client.on("message", (target, context, msg, self) => {
+    // console.debug({target, context, message: msg, self})
+    if (self) return
+    const ctx = context[0]
+
+    // Picarto's message structuring was the most cryptic by far...
+    // Thanks for helping me decypher it, Dreeda! <3
+
+    addMessage({
+      platform: "picarto",
+      id: ctx.id,
+      contents: msg,
+      timestamp: new Date(ctx.d),
+      author: {
+        nickname: ctx.n,
+        id: ctx.u,
+        color: ctx.k ? ("#" + ctx.k) : undefined,
+        avatarURL: ctx.i ? ("https://images.picarto.tv/" + ctx.i) : undefined,
+        statusFlags: {
+          owner: ctx.c == ctx.u, // Streamer ID == Sender ID
+          subscribed: ctx?.s,
+          verified: ctx?.z
+        }
+      }
+    })
+
+  })
+
+  // @ts-ignore
+  client.on("connected", (addr, port) => {
+    info(`[Picarto] Connected to ${addr??0}:${port??0}`)
+    changeConnectState("picarto", ConnStates.connected)
+  })
+  // @ts-ignore
+  client.on("closed", () => changeConnectState("picarto", ConnStates.disconnected))
+  // @ts-ignore
+  client.on("disconnected", () => changeConnectState("picarto", ConnStates.disconnected))
+  // @ts-ignore
+  client.on("unauthenticated", () => {
+    changeConnectState("picarto", ConnStates.disconnected)
+    sendAlert("settings", "Picarto authentication error! Please make sure you have the token for this channel.")
+  })
+
+}
 
 /* ======== Graceful exit ======== */
 
 require("gracy").onExit(async function() {
   if (connectState.youtube) disconnectChat("youtube")
-  if (connectState.twitch) disconnectChat("twitch")
+  if (connectState.twitch)  disconnectChat("twitch")
+  if (connectState.picarto) disconnectChat("picarto")
   server.close(() => debug("Closing server"))
 }, {logLevel: "error"})
 
@@ -499,7 +573,7 @@ function getThemes() {
  */
 async function waitFor(test, timeout_ms=20_000, frequency=200) {
     function sleep(ms=frequency) { return new Promise(resolve => setTimeout(resolve, ms))}
-    const endTime = Date.now() + timeout_ms
+    const endTime = Date.now() + timeout_ms // @ts-ignore
     const isNotTruthy = (/** @type {string | boolean | any[] | null | undefined} */ x) => x === undefined || x === false || x === null || x.length === 0
     let result = test()
     // console.log("A", result)
