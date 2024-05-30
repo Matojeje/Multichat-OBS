@@ -20,7 +20,10 @@
   "dependencies": {
     "@picocss/pico": "^2.0.6",
     "cli-color": "^2.0.4",
+    "date-fns": "^3.6.0",
+    "discord-markdown-parser": "^1.1.0",
     "dotenv": "^16.4.5",
+    "eris": "github:abalabahaha/eris#dev",
     "express": "^4.19.2",
     "file-system-db": "^2.1.0",
     "get-port": "^7.1.0",

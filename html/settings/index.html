@@ -211,6 +211,11 @@
       $id("autoconnect").checked = settings.server.autoconnect
     }
 
+    function loadDiscordValue(value) {
+      // console.debug("ldv", value)
+      $id("discord").value = value
+    }
+
     function save() {
       const settings = {
         platforms: {
@@ -232,6 +237,7 @@
       unsavedSettings = false
 
       $id("save").value = "Saving..."
+      settingsCache = settings
     }
 
     socket.on("saveSuccessful", () => {
@@ -263,6 +269,26 @@
       setTimeout(() => elem.focus(), 150)
     })
 
+    socket.on("discordChannelList", ({ html, raw }) => {
+      // console.debug({html, raw})
+
+      const elem = $id("discord")
+      const placeholder = `<option disabled value=".">Text channel</option>`
+      const none = `<option value="00000000_00000000">Ignore Discord messages</option>`
+
+      if (raw.length == 0) {
+        elem.innerHTML = placeholder
+        setTimeout(() => elem.value = ".", 50)
+      }
+      
+      else {
+        elem.innerHTML = placeholder + none + html
+        setTimeout(() => {
+          if (settingsCache) loadDiscordValue(settingsCache.platforms.discord.channel)
+        }, 100)
+      }
+    })
+
     socket.on("connectChange", onConnectionChange)
 
     function onConnectionChange(newState) {
@@ -279,9 +305,9 @@
             button.innerText = "Connecting"
             button.disabled = true
             button.ariaBusy = true
-            input.readOnly = true
+            platform == "discord" ? input.disabled = true : input.readOnly = true
 
-            button.onclick = () => {console.log("Click while connecting")}
+            button.onclick = () => {/* console.log("Click while connecting") */}
             break
 
           case ConnState.disconnecting:
@@ -289,9 +315,9 @@
             button.innerText = "Disconnecting"
             button.disabled = true
             button.ariaBusy = true
-            input.readOnly = true
+            platform == "discord" ? input.disabled = true : input.readOnly = true
 
-            button.onclick = () => {console.log("Click while disconnecting")}
+            button.onclick = () => {/* console.log("Click while disconnecting") */}
             break
 
           case ConnState.disconnected:
@@ -299,12 +325,12 @@
             button.innerText = "Connect"
             button.disabled = false
             button.ariaBusy = null
-            input.readOnly = false
+            platform == "discord" ? input.disabled = true : input.readOnly = false
 
             button.onclick = function() {
-              console.log("Click while disconnected")
+              /* console.log("Click while disconnected") */
               const channel = input.value
-              if (channel.trim() == "") {
+              if (channel.trim() == "" && platform != "discord") {
                 input.focus()
                 input.ariaInvalid = true
                 setTimeout(() => input.ariaInvalid = null, 1500)
@@ -319,10 +345,10 @@
             button.innerText = "Disconnect"
             button.disabled = false
             button.ariaBusy = null
-            input.readOnly = true
+            platform == "discord" ? input.disabled = false : input.readOnly = true
 
             button.onclick = () => {
-              console.log("Click while connected")
+              /* console.log("Click while connected") */
               const channel = input.value
               socket.emit("pleaseDisconnect", { platform, channel })
             }
@@ -350,21 +376,15 @@
           }
         } */
       })
+      
+
+      if (connectState.discord == ConnState.connected) socket.emit("getDiscordChannels")
     }
 
     socket.on("alert", ({ message, destination }) => {
       if (destination != "chat") alert(message)
     })
 
-    /* function toggleDarkMode() {
-      const darkMode = document.getElementById("darkModeSwitch").checked
-      socket.emit("darkModeChange", darkMode)
-    }
-
-    socket.on("darkModeChanged", (darkMode) => {
-      const rootStyle = document.documentElement.style
-      rootStyle.colorScheme = darkMode ? "dark" : "light"
-    }) */
   </script>
 </head>
 <body>
@@ -456,7 +476,7 @@
         </label> -->
 
         <fieldset class="twocol">
-          <label for="theme"><rt data-tooltip="Changes reflect instantly without having to save." data-placement="right">Theme</rt></label>
+          <label for="theme"><ttp data-tooltip="Changes reflect instantly without having to save." data-placement="right">Theme</ttp></label>
           <select id="theme" name="theme" onchange="socket.emit('themeChange', decodeURIComponent(this.value))"></select>
         </fieldset>
 
@@ -479,7 +499,7 @@
       <form id="server">
 
         <fieldset class="twocol">
-          <label for="port"><rt data-tooltip="If the port is taken, the next available port will be used." data-placement="right">Website port</rt> <small>(requires restart)</small></label>
+          <label for="port"><ttp data-tooltip="If the port is taken, the next available port will be used." data-placement="right">Website port</ttp> <small>(requires restart)</small></label>
           <input type="number" name="port" id="port" min="1" max="65535" step="1" />
         </fieldset>
 
@@ -498,7 +518,6 @@
       <small>(separate page)</small>
     </p> -->
     
-    <!-- <label for="darkModeSwitch">Dark Mode:</label><input type="checkbox" id="darkModeSwitch" onchange="toggleDarkMode()" /> -->
   </main>
 
   <footer class="container">

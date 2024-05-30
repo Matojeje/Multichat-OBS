@@ -106,14 +106,16 @@ websock.on("connection", (socket) => {
     settings.set("chat.theme", newTheme)
   })
 
+  socket.on("getDiscordChannels", () => updateDiscordChannels())
+
   socket.on("pleaseConnect", ({platform, channel}) => {
-    debug(`Trying to connect to ${platform} channel ${channel}`)
+    debug(`Trying to connect to ${properCase(platform)} channel ${channel}`)
 
     const key = `platforms.${platform}.channel`
     const savedChannel = settings.get(key)
     const state = connectState[platform]
 
-    if (channel != settings.get(key)) {
+    if (channel != settings.get(key) && channel.length > 1) {
       warn("Input channel different from saved, saving the new channel")
       settings.set(key, channel)
     }
@@ -306,7 +308,11 @@ async function connectChat(platform, channel) {
       picarto.connect()
       // Connection state changes handled in picartoSetup()
       break
-  
+
+    case "discord":
+      discord.connect()
+      break
+
     default:
       sendAlert("settings", `Unknown platform "${platform}"`)
       changeConnectState(platform, ConnStates.disconnected)
@@ -342,7 +348,11 @@ async function disconnectChat(platform, channel="") {
       if (picarto) picarto.close()
       changeConnectState(platform, ConnStates.disconnected)
       break
-  
+
+    case "discord":
+      discord.disconnect({ reconnect: true })
+      break
+
     default:
       warn(`Unknown platform "${platform}"`)
       break
@@ -492,12 +502,120 @@ function picartoSetup(client) {
 
 }
 
+/* ======== Discord ======== */
+
+const Eris = require("eris")
+const { discordFormatHTML } = require("./discordParser")
+
+const discord = new Eris.Client(prefixToken(process.env.DISCORD), {
+  intents: ["allNonPrivileged", "messageContent"],
+  defaultImageFormat: "webp"
+})
+
+discord.on("ready", () => {
+  info("[Discord] Bot ready")
+  changeConnectState("discord", ConnStates.connected)
+  updateDiscordChannels()
+})
+
+discord.on("disconnect", () => {
+  info("[Discord] Bot disconnected")
+  changeConnectState("discord", ConnStates.disconnected)
+  websock.emit("discordChannelList", {raw: [], html: ""})
+})
+
+discord.on("messageCreate", msg => {
+  // Test settings format
+  const pattern = /^(\d+)_(\d+)$/
+  const guild_channel = settings.get("platforms.discord.channel")
+  if (!pattern.test(guild_channel)) return
+
+  // Filter out messages from other channels
+  const targetChannel = pattern.exec(guild_channel)?.[2] ?? "0"
+
+  if (BigInt(msg.channel.id) != BigInt(targetChannel)) return
+
+  // Ignore system messages and webhooks
+  if (msg.webhookID || msg.member?.user.system) return
+
+  // Ignore non-text messages like joins and server boosts
+  const T = Eris.Constants.MessageTypes // @ts-ignore
+  const validType = [T.DEFAULT, T.REPLY, T.THREAD_STARTER_MESSAGE].includes(msg.type)
+  if (!validType) return
+
+
+  const P = Eris.Constants.Permissions
+  const modPerms = [P.kickMembers, P.banMembers, P.administrator]
+
+  const mem = msg.member, auth = msg.author
+  const userID = mem?.id || mem?.user.id || auth.id
+  const guild = discord.guilds.find(g => g.id == msg.guildID)
+
+  const color = mem ? decimalColorAsHex(highestColoredRole(mem)?.color) : undefined
+
+  addMessage({
+    platform: "discord",
+    id: msg.id,
+    contents: discordFormatHTML(msg),
+    timestamp: new Date(msg.timestamp),
+    author: {
+      nickname: mem?.nick || auth.globalName || mem?.user.globalName || mem?.username || auth.username,
+      id: userID,
+      color: color?.toLowerCase() == "#badbad" ? undefined : color,
+      avatarURL: mem?.avatarURL || mem?.staticAvatarURL || mem?.defaultAvatarURL,
+      statusFlags: {
+        owner: BigInt(guild?.ownerID??0) == BigInt(userID),
+        subscribed: !!mem?.premiumSince,
+        new: (msg.timestamp - (mem?.joinedAt??0)) < 7*24*60*60*1000,
+        verified: mem?.bot || mem?.user.bot || auth.bot,
+        moderator: modPerms.some(perm => mem?.permissions.has(perm))
+      }
+    }
+  })
+})
+
+;["channelCreate", "channelDelete", "channelUpdate",
+  "guildAvailable", "guildCreate", "guildDelete",
+  "guildUnavailable", "guildUpdate", "threadListSync",
+  "threadUpdate", "unavailableGuildCreate"
+].forEach(event => discord.on(event, updateDiscordChannels))
+
+function getDiscordChannelList(htmlMode=true) {
+  const T = Eris.Constants.ChannelTypes
+  const channelFilter = channel => [
+    T.GUILD_TEXT,
+    T.GUILD_NEWS,
+    T.GUILD_NEWS_THREAD,
+    T.GUILD_PUBLIC_THREAD,
+    T.GUILD_PRIVATE_THREAD,
+  ].includes(channel.type)
+  
+  const prefix = (name) => /^\p{L}/u.test(name) ? `#${name}` : name
+
+  function formatGuildChannels(guild) {
+    const channels = guild.channels.filter(channelFilter)
+    const html = channels.map(ch => `<option value="${guild.id}_${ch.id}">${prefix(ch.name)}</option>`)
+    return `<optgroup label="${guild.name}"> ${html.join(" ")} </optgroup>`
+  }
+
+  if (htmlMode) return discord.guilds.map(formatGuildChannels).join("\n")
+  else return discord.guilds.map(g => g.channels.filter(channelFilter))
+}
+
+function updateDiscordChannels() {
+  websock.emit("discordChannelList", {
+    raw: getDiscordChannelList(false),
+    html: getDiscordChannelList(true),
+  })
+}
+
 /* ======== Graceful exit ======== */
 
 require("gracy").onExit(async function() {
   if (connectState.youtube) disconnectChat("youtube")
   if (connectState.twitch)  disconnectChat("twitch")
   if (connectState.picarto) disconnectChat("picarto")
+  if (connectState.discord) disconnectChat("discord")
   server.close(() => debug("Closing server"))
 }, {logLevel: "error"})
 
@@ -565,6 +683,14 @@ function getThemes() {
   return ["Plain"]
 }
 
+/** @param {string|undefined} token */
+function prefixToken(token="") {
+  if (!token) return ""
+  return token.startsWith("Bot ") ? token : `Bot ${token}`
+}
+
+/* ======== Helper functions by other people ======== */
+
 /**
  * Waits for the test function to return a truthy value
  * @link https://stackoverflow.com/a/58296791
@@ -609,4 +735,21 @@ function formatTwitchEmotes(text, emotes) {
     }
   }
   return splitText.join("")
+}
+
+// Discord role utilities by https://gist.github.com/nirewen/507b4ff8ad93d138068a6e514849dda9
+
+/** @param {Eris.Member} member */
+const sortedRoles = (member) => member.roles
+  .map(r => member.guild.roles.get(r)) //@ts-ignore
+  .sort((a, b) => b.position - a.position)
+
+/** @param {Eris.Member} member */
+function highestColoredRole(member) {
+  const sorted = sortedRoles(member)
+  return sorted.length > 0 ? sorted.find(r => r?.color !== 0) : null
+}
+
+function decimalColorAsHex(color=12245933) {
+  return '#' + color.toString(16).padStart(6, "0")
 }
