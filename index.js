@@ -23,7 +23,7 @@ const defaults = {
   version: settingsVersion,
   chat: {
     historySize: 50,
-    theme: "Plain.css",
+    theme: "Plain",
   },
   platforms: {
     youtube: {channel: ""},
@@ -76,10 +76,17 @@ let connectState = {
 /* ======== Websockets (talking to the browser) ======== */
 
 websock.on("connection", (socket) => {
-    debug(`A web client connected     (${++clients} clients active)`)
+
+  /** @type {string|undefined} */ //@ts-ignore
+  const page = socket.handshake.query?.page
+  const pageName = _.capitalize(page ? page + " page" : "a web client")
+
+    debug(`${pageName} connected`   .padEnd(27) + `(${++clients} clients active)`)
   socket.on("disconnect", () => {
-    debug(`A web client disconnected  (${--clients} clients active)`)
+    debug(`${pageName} disconnected`.padEnd(27) + `(${--clients} clients active)`)
   })
+
+  if (page) socket.join(page)
 
   socket.emit("connectChange", connectState) // Hacky!
 
@@ -92,24 +99,39 @@ websock.on("connection", (socket) => {
   socket.on("saveSettings", newSett => {
     try {
       settings.set("version", settingsVersion)
-      if (newSett?.platforms) settings.set("platforms", newSett.platforms)
+      if (newSett?.platforms) {
+        trySet("platforms.youtube", newSett.platforms.youtube)
+        trySet("platforms.twitch",  newSett.platforms.twitch )
+        trySet("platforms.picarto", newSett.platforms.picarto)
+        trySet("platforms.discord", newSett.platforms.discord)
+      }
       if (newSett?.server) settings.set("server", newSett.server)
       if (newSett?.chat) settings.set("chat", newSett.chat)
       websock.emit("saveSuccessful")
     } catch (err) { error(err) }
+
+    function trySet(key, value) {
+      const badValues = [".", "undefined", "[object Object]", "null"]
+      if (badValues.includes(value)) {
+        debug(`Skip saving "${value}" into ${key}`)
+      } else {
+        settings.set(key, value)
+      }
+    }
   })
 
-  socket.on("getThemes", () => socket.emit("themeList", getThemes()))
+  socket.on("getThemes", async () => socket.emit("themeList", await getThemes()))
 
   socket.on("themeChange", newTheme => {
     websock.emit("themeChange", newTheme)
     settings.set("chat.theme", newTheme)
+    debug("Changed theme to " + newTheme)
   })
 
   socket.on("getDiscordChannels", () => updateDiscordChannels())
 
   socket.on("pleaseConnect", ({platform, channel}) => {
-    debug(`Trying to connect to ${properCase(platform)} channel ${channel}`)
+    debug(`Trying to connect to ${properCase(platform)} channel ${channel == "." ? "" : channel}`)
 
     const key = `platforms.${platform}.channel`
     const savedChannel = settings.get(key)
@@ -140,30 +162,20 @@ websock.on("connection", (socket) => {
   })
 
   socket.on("pleaseDisconnect", async ({platform, channel}) => {
-    debug(`Trying to disconnect from ${platform} channel ${channel}`)
+    debug(`Trying to disconnect from ${properCase(platform)} channel ${channel}`)
     changeConnectState(platform, ConnStates.disconnecting)
     disconnectChat(platform, channel)
   })
 
-  /* // Send current time every second
-  setInterval(() => {
-    socket.emit("time", new Date().toLocaleTimeString())
-  }, 1000)
-
-  // Handle dark mode setting changes
-  socket.on("darkModeChange", (newMode) => {
-    darkMode = newMode
-    socket.emit("darkModeChanged", darkMode)
-  })
-
-  // Send initial dark mode setting
-  socket.emit("darkModeChanged", darkMode) */
 })
 
 
 /** @param {"chat"|"settings"|"both"} destination */
 function sendAlert(destination, message="") {
-  websock.emit("alert", { message, destination })
+  if (destination == "both")
+    websock                .emit("alert", message)
+  else
+    websock.to(destination).emit("alert", message)
   warn(message)
 }
 
@@ -179,18 +191,47 @@ const routes = [
 ]
 
 routes.forEach(route => app.use(route.endpoint,
-  express.static( require("path").join(__dirname, route.path) ),
+  express.static( join(__dirname, route.path) ),
   require("serve-index")(route.path, {icons: true, hidden: false})
 ))
 
-startServer()
 async function startServer() {
   const port = await getPort(settings.get("server.port") ?? defaults.server.port)
   server.listen(port, () => {
-    const ip = getLocalInterface()?.address ?? "127.0.0.1"
-    info("Server is running on " + clc.underline(`http://${ip}:${port}`))
+    console.log(clc.cyanBright("Server is running on " + clc.underline(`http://127.0.0.1:${port}`)))
+    try {
+      const ip = getLocalInterface()?.address ?? "127.0.0.1"
+      qrCode(`http://${ip}:${port}/`)
+    } catch (err) {
+      error("Error while fetching local IP: " + err)
+    }
   })
 }
+
+/* ======== Startup flow ======== */
+
+startServer().then(() => {
+
+  // Autoconnect
+  setTimeout(() => { try {
+  if (settings.get("server.autoconnect") === true) {
+    const platforms = settings.get("platforms")
+    for (const p in platforms) {
+      const {channel} = platforms[p]
+      if (_.isString(channel)) { if (channel.length > 1) {     // @ts-ignore
+        changeConnectState(p, ConnStates.connecting)           // @ts-ignore
+        connectChat(p, channel)                                // @ts-ignore
+        fancy("autoconnect", p == "discord"
+          ? `Discord channel ${discordChannelTag(channel)}`    // @ts-ignore
+          : `${properCase(p)} channel ${channel}`, "debug"
+        )
+      }} else {
+        warn("Unexpected settings entry: " + p)
+      }
+    }
+  }} catch (err) { error("Autoconnect error: " + err) }}, 1000)
+
+})
 
 /* ======== Generic message handling ======== */
 
@@ -225,7 +266,7 @@ async function startServer() {
 function addMessage(message) {
 
   // Send to chat window
-  websock.emit("newMessage", message)
+  websock.to("chat").emit("newMessage", message)
 
   // Add to message history
   history.push("msg", message)
@@ -276,6 +317,7 @@ async function connectChat(platform, channel) {
       else {
         sendAlert("settings", `${properCase(platform)} user ${channel} isn't livestreaming right now!\nIs the stream publicly visible on this channel?`)
         changeConnectState(platform, ConnStates.disconnected)
+        fancy("youtube", "Giving up on connecting")
         return false
       }
 
@@ -283,7 +325,7 @@ async function connectChat(platform, channel) {
       twitch.join(channel)
 
       .then(data => {
-        info(`[Twitch] Connected to ${data}`)
+        fancy("twitch", `Connected to ${data}`)
         changeConnectState(platform, ConnStates.connected)
         return data
       })
@@ -364,12 +406,12 @@ async function disconnectChat(platform, channel="") {
 const youtube = new (require("tubechat")).TubeChat()
 
 youtube.on("chat_connected", (channel, videoId) => {
-  info(`[YouTube] Connected to ${channel}, video ${videoId}`)
+  fancy("youtube", `Connected to ${channel}, video ${videoId}`)
   // console.log("X", youtube.channelList())
 })
 
 youtube.on("chat_disconnected", (channel, videoId) => {
-  info(`[YouTube] Disconnected from ${channel}, video ${videoId}`)
+  fancy("youtube", `Disconnected from ${channel}, video ${videoId}`)
 })
 
 youtube.on("message", (msg) => {
@@ -417,12 +459,16 @@ const twitch = new (require("tmi.js")).Client({
   channels: [],
   connection: { reconnect: true, secure: true },
   // options: { debug: true },
-  // logger: { error, info, warn },
+  logger: {
+    error: msg => fancy("twitch", clc.red(msg), "error"),
+    info: msg => fancy("twitch", msg, "info"),
+    warn: msg => fancy("twitch", clc.yellow(msg), "warn")
+  },
 })
 
 twitch.on("chat", (channel, us, message, self) => {
   // My goodness, Twitch's userstate is messy
-  /* if (us.username == "fossabot") */ console.debug({channel, us, message, self})
+  // /* if (us.username == "fossabot") */ console.debug({channel, us, message, self})
   if (self) return
 
   addMessage({
@@ -487,18 +533,25 @@ function picartoSetup(client) {
 
   // @ts-ignore
   client.on("connected", (addr, port) => {
-    info(`[Picarto] Connected to ${addr??0}:${port??0}`)
+    fancy("picarto", `Connected to ${addr??0}:${port??0}`)
     changeConnectState("picarto", ConnStates.connected)
   })
   // @ts-ignore
-  client.on("closed", () => changeConnectState("picarto", ConnStates.disconnected))
+  client.on("closed", picartoDisconnectLog)
   // @ts-ignore
-  client.on("disconnected", () => changeConnectState("picarto", ConnStates.disconnected))
+  client.on("disconnected", picartoDisconnectLog)
+  
   // @ts-ignore
   client.on("unauthenticated", () => {
     changeConnectState("picarto", ConnStates.disconnected)
     sendAlert("settings", "Picarto authentication error! Please make sure you have the token for this channel.")
+    fancy("picarto", "Giving up on connecting")
   })
+
+  function picartoDisconnectLog() {
+    fancy("picarto", "Disconnected")
+    changeConnectState("picarto", ConnStates.disconnected)
+  }
 
 }
 
@@ -513,15 +566,15 @@ const discord = new Eris.Client(prefixToken(process.env.DISCORD), {
 })
 
 discord.on("ready", () => {
-  info("[Discord] Bot ready")
+  fancy("discord", "Bot connected and ready")
   changeConnectState("discord", ConnStates.connected)
   updateDiscordChannels()
 })
 
 discord.on("disconnect", () => {
-  info("[Discord] Bot disconnected")
+  fancy("discord", "Bot disconnected")
   changeConnectState("discord", ConnStates.disconnected)
-  websock.emit("discordChannelList", {raw: [], html: ""})
+  websock.to("settings").emit("discordChannelList", {raw: [], html: ""})
 })
 
 discord.on("messageCreate", msg => {
@@ -603,7 +656,7 @@ function getDiscordChannelList(htmlMode=true) {
 }
 
 function updateDiscordChannels() {
-  websock.emit("discordChannelList", {
+  websock.to("settings").emit("discordChannelList", {
     raw: getDiscordChannelList(false),
     html: getDiscordChannelList(true),
   })
@@ -625,6 +678,19 @@ function info(message="") { console.info(clc.whiteBright(message)) }
 function warn(message="") { console.warn(clc.yellow(message)) }
 function error(message="") { console.error(clc.red(message)) }
 function debug(message="") { console.debug(clc.blackBright(message)) }
+
+function fancy(source="", message="", type="info") {
+  let prefix = ""
+  switch (source) {
+    case "youtube": prefix = clc.redBright("[YouTube]"); break
+    case "twitch": prefix = clc.magentaBright("[Twitch]"); break
+    case "picarto": prefix = clc.greenBright("[Picarto]"); break
+    case "discord": prefix = clc.blueBright("[Discord]"); break
+    case "autoconnect": prefix = clc.cyanBright("[Autoconnect]"); break
+    default: prefix = clc.cyanBright("[i]"); break
+  }
+  console[type](`${prefix} ${type == "debug" ? clc.blackBright(message) : message}`)
+}
 
 
 /** @param {Platform} platform  */
@@ -663,30 +729,60 @@ function changeConnectState(platform, newState) {
   websock.emit("connectChange", connectState)
 }
 
-function getThemes() {
-  // I'm sure we could get fancier with Object.groupBy()
-  // but it's really not needed here, it's simple stuff!
+async function getThemes() {
+  const { readdir, access } = require("fs").promises
   try {
-    const files = require("fs").readdirSync("./themes")
 
-    const styles = files.filter(filename => filename.toLowerCase().endsWith(".css"))
-      .map(stripFileExt)
+    const subfolders = await readdir("./themes", { withFileTypes: true })
 
-    const templates = files.filter(filename => filename.match(/\.html?$/i))
-      .map(stripFileExt)
+    const validFolders = await Promise.all(subfolders
+      .filter(dir => dir.isDirectory())
+      .map(async (dir) => {
+        try {
+          await access(join("./themes", dir.name, "index.html"))
+          return dir.name
+        } catch {
+          warn(`Theme ${dir.name}: Can't access index.html`)
+          return null
+        }
+      }
+    ))
 
-    return _.intersection(styles, templates)
+    if (!validFolders.includes(defaults.chat.theme))
+      warn(`Can't find the default "${defaults.chat.theme}" theme - `+
+           `that might cause problems since it's used as a fallback.`)
+
+    return validFolders.filter(f => f != null)
 
   } catch (err) { error(err) }
 
   // Fallback to included theme
-  return ["Plain"]
+  return [defaults.chat.theme]
 }
 
 /** @param {string|undefined} token */
 function prefixToken(token="") {
   if (!token) return ""
   return token.startsWith("Bot ") ? token : `Bot ${token}`
+}
+
+function discordChannelTag(guild_channel) {
+  const pattern = /^(\d+)_(\d+)$/
+  if (!pattern.test(guild_channel)) return "<?>"
+  return `<#${pattern.exec(guild_channel)?.[2] ?? "0"}>`
+}
+
+function qrCode(text="") {
+  const qr = require("qrcode-terminal")
+  qr.setErrorLevel("L")
+  qr.generate(text, { small:true }, qrString => {
+    const lines = qrString.split("\n")
+    const coloredLines = [
+      /* clc.black(lines[0]), */ "",
+      ..._.tail(lines).map(l => clc.inverse(l))
+    ]
+    console.log(coloredLines.join("\n"))
+  })
 }
 
 /* ======== Helper functions by other people ======== */

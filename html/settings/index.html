@@ -121,7 +121,7 @@
   </style>
 
   <script>
-    const socket = io({ transports: ["websocket"] })
+    const socket = io({ transports: ["websocket"], query: {page: "settings"} })
     // If your browser can't handle websockets, it's old enough to be in middle school
 
     let settingsCache
@@ -178,11 +178,14 @@
 
       // Monitor connection
       setInterval(() => {
-      const websocketAlive = socket.connected
-      $id("disconnected").hidden = websocketAlive
-      if (websocketAlive == true && prevWebsocketAlive == false) location.reload()
-      prevWebsocketAlive = websocketAlive
-    }, 2000);
+        const websocketAlive = socket.connected
+        $id("disconnected").hidden = websocketAlive
+        if (websocketAlive == true && prevWebsocketAlive == false) {
+          window.onbeforeunload = () => null
+          location.reload()
+        }
+        prevWebsocketAlive = websocketAlive
+      }, 2000)
     })
 
     socket.on("settings", settings => load(settings))
@@ -305,7 +308,7 @@
             button.innerText = "Connecting"
             button.disabled = true
             button.ariaBusy = true
-            platform == "discord" ? input.disabled = true : input.readOnly = true
+            input.disabled = true
 
             button.onclick = () => {/* console.log("Click while connecting") */}
             break
@@ -315,7 +318,7 @@
             button.innerText = "Disconnecting"
             button.disabled = true
             button.ariaBusy = true
-            platform == "discord" ? input.disabled = true : input.readOnly = true
+            input.disabled = true
 
             button.onclick = () => {/* console.log("Click while disconnecting") */}
             break
@@ -325,7 +328,7 @@
             button.innerText = "Connect"
             button.disabled = false
             button.ariaBusy = null
-            platform == "discord" ? input.disabled = true : input.readOnly = false
+            input.disabled = platform == "discord" ? true : false
 
             button.onclick = function() {
               /* console.log("Click while disconnected") */
@@ -345,7 +348,7 @@
             button.innerText = "Disconnect"
             button.disabled = false
             button.ariaBusy = null
-            platform == "discord" ? input.disabled = false : input.readOnly = true
+            input.disabled = platform == "discord" ? false : true
 
             button.onclick = () => {
               /* console.log("Click while connected") */
@@ -381,8 +384,9 @@
       if (connectState.discord == ConnState.connected) socket.emit("getDiscordChannels")
     }
 
-    socket.on("alert", ({ message, destination }) => {
-      if (destination != "chat") alert(message)
+    socket.on("alert", message => {
+      console.warn(message)
+      alert(message)
     })
 
   </script>
@@ -459,10 +463,10 @@
       <form id="chat">
 
         <!-- <fieldset class="grid" style="--pico-grid-row-gap: 0px"> -->
-          <label for="timestamps">
+          <!-- <label for="timestamps">
             <input type="checkbox" id="timestamps" name="timestamps" />
             Show timestamps
-          </label>
+          </label> -->
   
           <!-- <label for="soundOn">
             <input type="checkbox" id="soundOn" name="soundOn" />

@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Multichat</title>
+  <script src="/socket.io/socket.io.js"></script>
+  <link rel="stylesheet" href="multichaticons.css">
+  <style>
+    :root {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Ubuntu, 'Open Sans', sans-serif;
+    }
+    body {
+      margin: 0px;
+      padding: 0px;
+      overflow: hidden;
+    }
+    #chatArea {
+      line-height: 150%;
+      width: 100vw;
+      height: 100vh;
+      padding: 1rem;
+      box-sizing: border-box;
+      overflow: hidden;
+      /* Idk about this one below */
+      display: table-cell;
+      vertical-align: bottom;
+    }
+    .emoji, .platform {
+      width: 1em;
+      height: 1em;
+    }
+    .message {
+      animation: appear 150ms linear forwards;
+    }
+    .premessage {
+      display: inline-flex;
+      align-items: center;
+      flex-wrap: nowrap;
+      gap: 1ch;
+      margin-inline-end: 0.5ch;
+    }
+    @keyframes appear {
+      from { opacity: 0% }
+      to   { opacity: 100% }
+    }
+  </style>
+</head>
+<body>
+  <div id="chatArea"></div>
+  <script>
+    const socket = io({ transports: ["websocket"] })
+
+    socket.on("connect", () => {
+      console.log("Connected to server")
+    })
+
+    socket.on("newMessage", (msg) => {
+      const chat = document.getElementById("chatArea")
+      const messageDisplayLimit = 150
+
+      // Add new message
+      const el = document.createElement("div")
+      el.classList.add("message")
+      el.innerHTML = `
+        <span class="premessage">
+          <span>${new Date(msg.timestamp || Date.now()).toLocaleTimeString([], {timeStyle: "short"})}</span>
+          <!-- <img class="platform" src="/${msg.platform}.svg"> -->
+          <b style="color: ${msg.author.color}"><i class="icon-${msg.platform}"></i> ${msg.author.nickname}</b>
+        </span>
+        <span>${msg.contents}</span>`
+      chat.appendChild(el)
+      el.scrollIntoView({ behavior: "smooth" })
+
+      // Remove old messages
+      while (chat.children.length > messageDisplayLimit) {
+        chat.removeChild(chat.firstChild)
+      }
+
+    })
+  </script>
+</body>
+</html>
