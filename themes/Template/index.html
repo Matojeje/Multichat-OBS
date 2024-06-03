@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <style>
+
+    /* Once the chat messages fill up past the screen,
+     * this will hide the scrollbars. Let's also set the
+     * font because Firefox defaults to an ugly serif one. */
+
+    body { overflow: hidden; font-family: sans-serif; }
+
+    /* The message contents come pre-formatted as chunks of
+     * HTML code, and in every supported platform, emojis/stickers
+     * are sent as <img> elements with an `emoji`/`sticker` class.
+     * This should make them as tall as the surrounding text. */
+     
+    .emoji, .sticker { height: 1em; }
+
+  </style>
+
+  <!-- Load the Socket.io library for talking with the server -->
+  <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+
+  <!-- Your HTML layouts and containers go here -->
+
+  <script>
+
+    /* This creates the Socket.io client. It's important to
+     * include `query: {page: "chat"}` here - that's what
+     * tells the server that it's a chat client. Otherwise,
+     * no chat messages will be sent over.
+     * 
+     * You can omit `transports:["websocket"]` here
+     * if you're okay with using the older polling method
+     * instead of websockets, but it's harder to debug
+     * inside your browser inspector than websockets. */
+    const socket = io({ transports: ["websocket"], query: {page: "chat"} })
+
+    // Socket.io binds events such as `connect` to functions.
+
+    socket.on("connect", () => {
+      console.log("Connected to server")
+    })
+
+    /* The server mostly sends `newMessage` events, passing
+     * the message data in a predictable structure that's
+     * described below.  */
+
+    socket.on("newMessage", (msg) => {
+
+      /* Add your code for displaying messages on the page
+       * here! Feel free to use the Plain theme for inspiration.
+       * Here's the bare minimum: */
+
+      document.write(msg.contents + "<br>")
+
+      /*
+       * Remember to clean out old messages over time, so your
+       * browser's performance doesn't get too choppy.
+       * The Plain theme also has an implementation of this.
+       */
+
+    })
+
+    /* In addition to receiving new chat messages, the server
+     * will also send the message history as soon as you connect.
+     * The size of this history can be changed in the settings.
+     * You can also manually request the history later by
+     * emitting `getChatHistory`. */
+    socket.on("chatHistory", (data) => {
+
+      // The message history is an array of messages:
+      /** @type {ChatMessage[]} */
+      const messageHistory = data.history
+
+      // Write past messages to preserve chat between theme switches.
+      // The messages are sorted oldest-first!
+      messageHistory.forEach(msg => document.write(msg.contents + "<br>"))
+    })
+
+    /* Finally, it's important to react to the `themeChange`
+     * event by reloading the page, so that it won't be neccessary
+     * to refresh the browser source in OBS every time you change
+     * the theme in the settings. The server ensures that the new
+     * theme is sent after reloading instead of the current one. */
+    socket.on("themeChange", () => location.reload())
+
+  </script>
+  <!-- Lottie player library solely for supporting a special kind of animated Discord stickers -->
+  <script src="https://unpkg.com/@lottiefiles/lottie-player@latest/dist/lottie-player.js"></script>
+</body>
+</html>

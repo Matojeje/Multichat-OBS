@@ -206,11 +206,11 @@
       .map(x => `\n.${x}.${pl[x].tokenAdded ? "notLoaded" : "loaded"} {display:none}`).join("")
 
       // Chat
-      $id("history").value = settings.chat.historySize
+      $id("history").value = parseInt(settings.chat.historySize)
       $id("theme").value = settings.chat.theme
       
       // Server
-      $id("port").value = settings.server.port
+      $id("port").value = parseInt(settings.server.port)
       $id("autoconnect").checked = settings.server.autoconnect
     }
 
@@ -490,7 +490,7 @@
         </fieldset>
 
         <filedset role="group" class="twocol">
-          <input type="button" class="outline" value="Clear message history" />
+          <input type="button" class="outline" value="Clear message history" onclick="socket.emit('clearHistory')" />
           <input type="button" class="outline" value="Refresh theme list" onclick="socket.emit('getThemes')"/>
         </filedset>
       </form>

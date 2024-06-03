@@ -36,6 +36,7 @@
     "sortablejs": "^1.15.2",
     "tmi.js": "^1.8.5",
     "tubechat": "^1.0.3",
+    "universal-emoji-parser": "^1.0.127",
     "xss": "^1.0.15"
   }
 }

@@ -123,7 +123,9 @@ websock.on("connection", (socket) => {
   socket.on("getThemes", async () => socket.emit("themeList", await getThemes()))
 
   socket.on("themeChange", newTheme => {
-    websock.emit("themeChange", newTheme)
+    const oldTheme = settings.get("chat.theme") ?? defaults.chat.theme
+    if (oldTheme == newTheme) return
+    websock.emit("themeChange", {oldTheme, newTheme})
     settings.set("chat.theme", newTheme)
     debug("Changed theme to " + newTheme)
   })
@@ -167,6 +169,31 @@ websock.on("connection", (socket) => {
     disconnectChat(platform, channel)
   })
 
+  if (page == "chat") socket.emit("chatHistory", {history: getChatHistory()})
+
+  socket.on("getChatHistory", rc => socket.emit("chatHistory", {history: getChatHistory(rc)}))
+
+  function getChatHistory(requestedCount=0) {
+    /** @type {ChatMessage[]} */
+    const msgHistory = history.get("msg").sort(messageTimeSort).reverse()
+
+    const rc = requestedCount == 0 ? undefined : requestedCount
+    const size = Math.abs(rc ?? settings.get("chat.historySize") ?? defaults.chat.historySize)
+    return msgHistory.slice(-size)
+  }
+
+  socket.on("clearHistory", () => {
+    try {
+      const count = history.get("msg")?.length
+      history.delete("msg")
+      history.set("msg", [])
+      websock.emit("historyCleared")
+      warn(`Deleted ${count} messages from history`)
+    } catch (err) {
+      error("Error while clearing history: " + err)
+    }
+  })
+
 })
 
 
@@ -189,6 +216,13 @@ const routes = [
   { endpoint: "/sort", path: "./node_modules/sortablejs/" },
   { endpoint: "/",     path: "./html" },
 ]
+
+// Hook up different theme folders to the /chat endpoint
+app.use("/chat", (req, res, next) => {
+  const themePath = join(__dirname, "themes", settings.get("chat.theme") ?? defaults.chat.theme)
+  express.static(themePath)(req, res, next)
+  require("serve-index")(themePath, {icons: true, hidden: false})
+})
 
 routes.forEach(route => app.use(route.endpoint,
   express.static( join(__dirname, route.path) ),
@@ -256,7 +290,7 @@ startServer().then(() => {
  * @typedef {{
  *  id: string,
  *  platform: Platform,
- *  timestamp: Date,
+ *  timestamp: Date | string,
  *  contents: string,
  *  author: ChatPerson,
  * }} ChatMessage
@@ -461,10 +495,17 @@ const twitch = new (require("tmi.js")).Client({
   // options: { debug: true },
   logger: {
     error: msg => fancy("twitch", clc.red(msg), "error"),
-    info: msg => fancy("twitch", msg, "info"),
+    info: msg => {if (twitchLogFilter(msg)) fancy("twitch", msg, "info")},
     warn: msg => fancy("twitch", clc.yellow(msg), "warn")
   },
 })
+
+function twitchLogFilter(msg="") {
+  return [
+    /^\[#\w+\] <\w+>:/, // Regular chat logging
+    /^\[#\w+\] \w+ has been timed out/, // Time outs
+  ].every(filter => filter.test(msg) == false)
+}
 
 twitch.on("chat", (channel, us, message, self) => {
   // My goodness, Twitch's userstate is messy
@@ -669,6 +710,7 @@ require("gracy").onExit(async function() {
   if (connectState.twitch)  disconnectChat("twitch")
   if (connectState.picarto) disconnectChat("picarto")
   if (connectState.discord) disconnectChat("discord")
+  websock.emit("serverShutdown")
   server.close(() => debug("Closing server"))
 }, {logLevel: "error"})
 
@@ -689,9 +731,14 @@ function fancy(source="", message="", type="info") {
     case "autoconnect": prefix = clc.cyanBright("[Autoconnect]"); break
     default: prefix = clc.cyanBright("[i]"); break
   }
-  console[type](`${prefix} ${type == "debug" ? clc.blackBright(message) : message}`)
+  const logLevel = Object.keys(console).includes(type) ? type : "info"
+  console[logLevel](`${prefix} ${logLevel == "debug" ? clc.blackBright(message) : message}`)
 }
 
+/** @param {ChatMessage} a @param {ChatMessage} b */
+function messageTimeSort(a, b) {
+  return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+}
 
 /** @param {Platform} platform  */
 function properCase(platform) {

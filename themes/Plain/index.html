@@ -5,7 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Multichat</title>
   <script src="/socket.io/socket.io.js"></script>
-  <link rel="stylesheet" href="multichaticons.css">
+  <link rel="stylesheet" href="/assets/multichaticons.css">
+  <link rel="stylesheet" href="/assets/animation.css">
   <style>
     :root {
       font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Ubuntu, 'Open Sans', sans-serif;
@@ -14,6 +15,10 @@
       margin: 0px;
       padding: 0px;
       overflow: hidden;
+    }
+    :link, :visited, :any-link {
+      text-decoration: none;
+      color: royalblue;
     }
     #chatArea {
       line-height: 150%;
@@ -29,9 +34,19 @@
     .emoji, .platform {
       width: 1em;
       height: 1em;
+      object-fit: contain;
+      transform: translateY(3px);
+    }
+    .sticker {
+      width: 4em;
+      height: 4em;
+      object-fit: contain;
     }
     .message {
       animation: appear 150ms linear forwards;
+    }
+    .message > span:has(.sticker) {
+      vertical-align: middle;
     }
     .premessage {
       display: inline-flex;
@@ -49,35 +64,140 @@
 <body>
   <div id="chatArea"></div>
   <script>
-    const socket = io({ transports: ["websocket"] })
+    const socket = io({ transports: ["websocket"], query: {page: "chat"} })
+    const chat = document.getElementById("chatArea")
+    const shownMessages = new Map()
+    const messageDisplayLimit = 150
+    const aliveCheck = { prevState: true, disconnectedMsgID: "" }
 
     socket.on("connect", () => {
+      if (aliveCheck.disconnectedMsgID != "") {
+        console.log("Reconnected to server")
+        shownMessages.delete(aliveCheck.disconnectedMsgID)
+        chat.removeChild(document.querySelector(`[data-id="${aliveCheck.disconnectedMsgID}"]`))
+      } else
       console.log("Connected to server")
     })
 
-    socket.on("newMessage", (msg) => {
-      const chat = document.getElementById("chatArea")
-      const messageDisplayLimit = 150
+    socket.on("serverShutdown", () => console.log("Server shutdown announced"))
 
+    socket.on("themeChange", ({newTheme, oldTheme}) => {
+      if (newTheme != "Plain") location.reload()
+    })
+
+    socket.on("newMessage", (msg) => {
       // Add new message
+      shownMessages.set(msg.id, msg)
+      const el = buildMessage(msg)
+      chat.appendChild(el)
+      scrollChat()
+    })
+
+    socket.on("chatHistory", ({history}) => {
+      const oldestMessage = chat.firstChild
+
+      history.forEach(msg => {
+        // Check if we don't already have the message added
+        if (shownMessages.has(msg.id)) return
+
+        // Add old message
+        shownMessages.set(msg.id, msg)
+        const el = buildMessage(msg)
+        if (oldestMessage == null) chat.appendChild(el)
+        else chat.insertBefore(el, oldestMessage)
+      })
+
+      scrollChat()
+    })
+
+    function buildMessage(msg) {
       const el = document.createElement("div")
       el.classList.add("message")
       el.innerHTML = `
         <span class="premessage">
           <span>${new Date(msg.timestamp || Date.now()).toLocaleTimeString([], {timeStyle: "short"})}</span>
-          <!-- <img class="platform" src="/${msg.platform}.svg"> -->
           <b style="color: ${msg.author.color}"><i class="icon-${msg.platform}"></i> ${msg.author.nickname}</b>
         </span>
         <span>${msg.contents}</span>`
-      chat.appendChild(el)
-      el.scrollIntoView({ behavior: "smooth" })
+      el.dataset.id = msg.id
+      return el
+    }
 
-      // Remove old messages
-      while (chat.children.length > messageDisplayLimit) {
-        chat.removeChild(chat.firstChild)
-      }
-
+    // Clearing chat history
+    socket.on("historyCleared", () => {
+      chat.innerHTML = ""
+      const systemMsgID = addSystemMessage("Chat history cleared", "attention")
+      setTimeout(() => { try {
+        chat.removeChild(document.querySelector(`[data-id="${systemMsgID}"]`))
+      } catch (error) {
+        console.debug(error)
+      }}, 15_000)
     })
+
+    // Remove old and overflown messages over time
+    const removeInterval = setInterval(() => {
+      while (chat.children.length > messageDisplayLimit) {
+        const toRemove = chat.firstChild
+        shownMessages.delete(toRemove.dataset.id)
+        chat.removeChild(toRemove)
+      }
+    }, 5000)
+
+    // Monitor connection
+    const connectionCheckInterval = setInterval(() => {
+      const websocketAlive = socket.connected
+      if (websocketAlive == false && aliveCheck.prevState == true) {
+        console.log("Disconnected from server")
+        aliveCheck.disconnectedMsgID = addSystemMessage(`Chat disconnected <i class="icon-spin animate-spin"></i>`)
+      }
+      aliveCheck.prevState = websocketAlive
+    }, 2000)
+
+    // Helper function for sending system messages
+    function addSystemMessage(text, icon="cog") {
+      const id = crypto.randomUUID()
+      const now = new Date()
+
+      const el = document.createElement("div")
+      el.classList.add("message", "system")
+      el.innerHTML = `
+        <span class="premessage">
+          <span>${now.toLocaleTimeString([], {timeStyle: "short"})}</span>
+          <b><i class="icon-${icon}"></i> System</b>
+        </span>
+        <span style="color: royalblue">${text}</span>`
+
+      shownMessages.set(id, { id, contents: text, platform: "system", timestamp: now.toISOString(), author: {nickname: "System"} })
+
+      el.dataset.id = id
+      chat.appendChild(el)
+      scrollChat()
+      return id
+    }
+
+    function scrollChat() {
+      if (chat.children.length == 0) return
+      debounce(() =>
+        chat.lastChild.scrollIntoView({ behavior: "smooth" })
+      , 160)()
+    }
+
+    window.addEventListener("resize", scrollChat)
+
+    const scrollDownInterval = setInterval(scrollChat, 7_000)
+
+    // https://www.joshwcomeau.com/snippets/javascript/debounce/
+    const debounce = (callback, wait) => {
+      let timeoutId = null;
+      return (...args) => {
+        window.clearTimeout(timeoutId);
+        timeoutId = window.setTimeout(() => {
+          callback.apply(null, args);
+        }, wait);
+      };
+    }
+
   </script>
+  <script src="https://unpkg.com/@lottiefiles/lottie-player@latest/dist/lottie-player.js" defer></script>
 </body>
 </html>
